@@ -39,7 +39,7 @@ persistence: none
 # It does not decide who owns the app, and nothing in this file does. Pippa
 # Labs created this repository for your Pippa account, so every app published
 # from it is yours. docs/REVIEW_AND_SHARING.md is the whole story.
-app_author_name: ""
+app_author_name: "SkyWatcher"
 
 app:
   # Filled in for you. A new repository replaces this placeholder within a
@@ -55,7 +55,7 @@ app:
   # Hyphens are not valid in an app id anywhere. `git remote get-url origin`
   # tells you the repository name.
   id: hack.app_7065
-  name: Days Until
+  name: Plane Spotter
   # The version you are pushing. Pippa keeps a copy of the code of every
   # version, so pushing a new version never changes an older one: the approved
   # version keeps working for everyone while you try the next.
@@ -75,8 +75,10 @@ app:
   # badge Pippa shows is parsed from "[via <name> <version> by <author name>]"
   # (the author name is `app_author_name` above) and splits on the first "by".
   summary: >-
-    Works out how many days there are until a date you name, and says which
-    day of the week it falls on.
+    Tells you which plane is flying over a place right now: the flight, the
+    airline, where it is going, the aircraft type and how high it is. It
+    sends the place name to OpenStreetMap to find it on the map, and that
+    location to the public adsb.lol and adsbdb flight-tracking services.
 
 # Who can install it. `personal` means a person's own Pippa.
 agent_types:
@@ -99,50 +101,83 @@ agent_types:
 #     "my calendar" belong to Pippa Diary; a phrase using them will lose.
 
 outcomes:
-  - id: days.until
-    summary: Count the days between now and a date, and name the weekday
+  - id: plane.overhead
+    summary: Name the plane flying over a place right now, with its route, airline, aircraft type and height
     example_phrases:
-      - how many days until
-      - how long until
-      - how many sleeps until
-      - days left until
-      - what day of the week is
-    # What Pippa extracts from the user's message and hands you. A model reads
-    # `description` to do that extraction, so write it as an instruction to
-    # whoever is filling the field in.
+      - what plane is flying over
+      - what's that plane above
+      - which flight is overhead
+      - what aircraft is flying over
+      - where is the plane overhead going
+      - what's that helicopter flying over
+      - plane flying over me right now
+      - how high is the plane above
     inputs:
-      # `required: false`, although the app is useless without a date, and
-      # that is deliberate. A missing REQUIRED input is refused inside the
-      # runtime before your code runs, and the user is shown a message that
-      # blames your app for a question they asked perfectly reasonably. An
-      # optional input simply arrives absent, your code notices, and you
-      # raise an error that says something true. Keep `required: true` for
-      # inputs the extractor can always supply.
-      - name: date
+      # Optional on purpose: a missing REQUIRED input is refused before the
+      # code runs, with a message that blames the app. The code says what to
+      # type instead.
+      - name: place
         type: string
         required: false
         description: >-
-          The target date, as the user wrote it — for example "25 December",
-          "2027-01-01" or "next Friday". If the message does not name a date,
-          return an empty string rather than guessing.
-      - name: timezone
-        type: timezone
-        required: false
-        description: The user's time zone, so "today" means their today.
-    # What you promise to return. Returning anything else is refused; omitting
-    # a declared field is refused too. Keep it small and specific.
+          The place the user is asking about: a town, district, street,
+          landmark or UK postcode, as they wrote it, for example
+          "Hammersmith", "Big Ben" or "SW7 2AZ". If the message names no
+          place, return an empty string rather than guessing.
     output:
-      - name: days
-        type: integer
-        description: How many whole days until the date. Negative if it has passed.
-      - name: target_date
+      - name: place
         type: string
-        description: The date you actually used, as YYYY-MM-DD.
-      - name: weekday
-        type: string
-        description: The day of the week the date falls on.
-      - name: already_passed
+        description: The place the app looked above, as the geocoder named it.
+      - name: plane_found
         type: boolean
+        description: Whether any aircraft was in the air within about 12 miles.
+      - name: planes_nearby
+        type: integer
+        description: How many aircraft are in the air within about 12 miles.
+      - name: callsign
+        type: string
+        required: false
+        description: The radio callsign of the nearest aircraft, such as BAW35.
+      - name: flight_number
+        type: string
+        required: false
+        description: The airline flight number, such as BA35.
+      - name: airline
+        type: string
+        required: false
+      - name: origin
+        type: string
+        required: false
+        description: Where the flight is coming from, as airport and city.
+      - name: destination
+        type: string
+        required: false
+        description: Where the flight is going, as airport and city.
+      - name: aircraft_type
+        type: string
+        required: false
+        description: The kind of aircraft, such as Airbus A320.
+      - name: registration
+        type: string
+        required: false
+      - name: altitude_feet
+        type: integer
+        required: false
+      - name: speed_mph
+        type: integer
+        required: false
+      - name: distance_miles
+        type: number
+        required: false
+        description: How far the aircraft is from the place, along the ground.
+      - name: direction
+        type: string
+        required: false
+        description: Which way to look from the place, such as north-west.
+      - name: climbing_or_descending
+        type: string
+        required: false
+        description: '"climbing", "descending" or "level".'
 
 # ── API keys your app needs (this example needs none) ────────────────────────
 #

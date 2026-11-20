@@ -1,156 +1,187 @@
-"""Tests for your app. Run them with `pytest`.
+"""Tests for Plane Spotter. The build runs these; nothing here touches the network.
 
-Keep these. Publishing runs them, and a repository whose tests fail does not
-deploy — which is the fastest feedback you will get all day, because the
-alternative is finding out from a user that your app answers wrongly.
-
-`LocalRunner` is the same code the production runtime uses to call your app.
-So a call that works here works deployed, and — more usefully — a `Result`
-that violates your manifest fails here exactly as it would in production.
-That is the whole reason to test through the runner rather than calling
-`App().handle(...)` directly.
+Every test replaces `App._fetch`, the one method that does HTTP, with a stub
+that answers by URL. `conftest.py` blocks real sockets, so a test that forgot
+to stub would fail loudly rather than pass on the network.
 """
 
 from __future__ import annotations
 
+import io
+import json
+import urllib.error
 from datetime import datetime, timezone
 
 import pytest
-from pippa_agentapp_sdk import LocalRunner, OutputShapeViolation
+from pippa_agentapp_sdk import (
+    LocalRunner,
+    OutputShapeViolation,
+    RateLimitedError,
+    ServiceUnavailableError,
+)
 
-from app import App, CannotReadDate
+from app import App, NoPlaceGiven, PlaceNotFound
 
-# A fixed "now", so a test that passes today still passes next March.
-# 21:00 UTC on purpose: it is already the next day in New Zealand, which is
-# what makes the time zone test below mean anything. At 09:00 UTC it is still
-# the same day everywhere that matters, and the test would pass whether or not
-# the code handled time zones at all.
-NOW = datetime(2026, 10, 22, 21, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 20, 15, 0, tzinfo=timezone.utc)
+
+# Real shapes, captured from the live services on 2026-11-20 and trimmed.
+HAMMERSMITH = [{"lat": "51.4920377", "lon": "-0.2236401", "name": "Hammersmith",
+                "display_name": "Hammersmith, London Borough of Hammersmith and Fulham"}]
+
+AIRCRAFT = {"ac": [
+    {"hex": "4009c6", "flight": "SHT12Y  ", "r": "G-EUUI", "t": "A320",
+     "alt_baro": "ground", "gs": 0.0, "dst": 8.1, "dir": 264.5},
+    {"hex": "406d7a", "flight": "BAW35   ", "r": "G-STBA", "t": "B77W",
+     "alt_baro": 3800, "gs": 160.0, "baro_rate": -768, "dst": 2.4, "dir": 226.5},
+    {"hex": "400abc", "flight": "GWOFM   ", "r": "G-WOFM", "t": "A109",
+     "alt_baro": 1300, "gs": 50.0, "dst": 3.1, "dir": 128.5},
+], "msg": "No error", "total": 3}
+
+ROUTE = {"response": {"flightroute": {
+    "callsign": "BAW35", "callsign_iata": "BA35",
+    "airline": {"name": "British Airways"},
+    "origin": {"name": "London Heathrow Airport", "municipality": "London"},
+    "destination": {"name": "Chennai International Airport", "municipality": "Chennai"},
+}}}
 
 
-def call(inputs: dict, outcome: str = "days.until", *, explicit: bool = False):
-    """Run one outcome the way the runtime does, and return the Result.
+def stub(geocode=HAMMERSMITH, aircraft=AIRCRAFT, route=ROUTE, fail=None):
+    """A fake `_fetch` that answers each service by its URL.
 
-    `granted_secrets` is required even though a hackathon app never has any —
-    the runner takes it on every call, so an empty dict is how you say "none".
-
-    `explicit=True` calls the app the way Pippa does when the person picked
-    it by name (`@Days Until ...`) instead of Pippa choosing it. The app sees
-    it as `call.context.explicit`.
+    `fail` maps a host fragment to an exception to raise for that service.
     """
-    return LocalRunner(App()).call(
-        outcome, inputs, granted_secrets={}, now=NOW, request_id="test-1",
-        explicit=explicit,
+    def fetch(url, timeout=6.0):
+        for host, error in (fail or {}).items():
+            if host in url:
+                raise error
+        if "nominatim" in url:
+            return json.dumps(geocode).encode()
+        if "adsb.lol" in url:
+            return json.dumps(aircraft).encode()
+        if "adsbdb" in url:
+            return json.dumps(route).encode()
+        raise AssertionError(f"unexpected url {url}")
+    return fetch
+
+
+def http_error(code):
+    return urllib.error.HTTPError("https://example.com", code, "x", {}, io.BytesIO(b""))
+
+
+def call(inputs, fetch=None, *, explicit=False):
+    app = App()
+    app._fetch = fetch or stub()
+    return LocalRunner(app).call(
+        "plane.overhead", inputs, granted_secrets={}, now=NOW,
+        request_id="test-1", explicit=explicit,
     ).result
 
 
 def test_the_manifest_is_valid():
-    """The first thing to break, and the easiest to miss.
-
-    `App()` validates manifest.yaml as it is constructed, so this fails the
-    moment the manifest is malformed — before anything else has a chance to
-    produce a more confusing error.
-    """
     app = App()
-    assert app.manifest.app_id.startswith("hack.")
-    assert [o.id for o in app.manifest.outcomes] == ["days.until"]
+    assert app.manifest.app_id == "hack.app_7065"
+    assert [o.id for o in app.manifest.outcomes] == ["plane.overhead"]
 
 
-def test_it_counts_the_days():
-    result = call({"date": "2026-12-25"})
-    assert result.data["days"] == 64
-    assert result.data["target_date"] == "2026-12-25"
-    assert result.data["weekday"] == "Friday"
-    assert result.data["already_passed"] is False
+def test_it_names_the_nearest_airborne_plane_with_its_route():
+    data = call({"place": "Hammersmith"}).data
+    assert data["place"] == "Hammersmith"
+    assert data["plane_found"] is True
+    assert data["planes_nearby"] == 2          # the plane on the ground is ignored
+    assert data["callsign"] == "BAW35"
+    assert data["flight_number"] == "BA35"
+    assert data["airline"] == "British Airways"
+    assert data["aircraft_type"] == "Boeing 777-300ER"
+    assert data["origin"] == "London Heathrow Airport (London)"
+    assert data["destination"] == "Chennai International Airport (Chennai)"
+    assert data["altitude_feet"] == 3800
+    assert data["speed_mph"] == 184
+    assert data["distance_miles"] == 2.8
+    assert data["direction"] == "south-west"
+    assert data["climbing_or_descending"] == "descending"
 
 
-def test_a_date_written_in_words_works():
-    result = call({"date": "25 December"})
-    assert result.data["target_date"] == "2026-12-25"
+def test_the_sentence_reads_well():
+    narrative = call({"place": "Hammersmith"}).narrative
+    assert narrative.startswith("British Airways flight BA35, a Boeing 777-300ER,")
+    assert "south-west of Hammersmith at 3,800 feet" in narrative
+    assert "to Chennai International Airport (Chennai)" in narrative
 
 
-def test_a_date_already_gone_rolls_to_next_year():
-    """`1 January` asked in October means the January that is coming."""
-    result = call({"date": "1 January"})
-    assert result.data["target_date"] == "2027-01-01"
-    assert result.data["already_passed"] is False
+def test_a_flight_with_no_published_route_still_answers():
+    """Police helicopters and private planes have no route. Leave it out."""
+    data = call({"place": "Hammersmith"},
+                stub(route={"response": "unknown callsign"})).data
+    assert data["callsign"] == "BAW35"
+    assert "origin" not in data and "airline" not in data
 
 
-def test_the_users_timezone_decides_what_today_is():
-    """21:00 UTC is already tomorrow in Auckland.
-
-    Worth a test of its own: it is the bug every date app has, it only shows
-    up for users in some parts of the world, and it is invisible if you only
-    ever test from one place.
-    """
-    here = call({"date": "2026-10-23"}).data["days"]
-    there = call({"date": "2026-10-23", "timezone": "Pacific/Auckland"}).data["days"]
-    assert here == 1    # still the 22nd in UTC
-    assert there == 0   # already the 23rd in Auckland
+def test_the_route_service_failing_does_not_lose_the_plane():
+    data = call({"place": "Hammersmith"},
+                stub(fail={"adsbdb": TimeoutError()})).data
+    assert data["aircraft_type"] == "Boeing 777-300ER"
+    assert "destination" not in data
 
 
-def test_a_made_up_timezone_never_reaches_the_app():
-    """The platform checks declared types before your code runs.
-
-    `type: timezone` in the manifest means the runtime validates it. So your
-    app does not need to — and should not, because a hand-rolled check here
-    would be dead code that looks load-bearing.
-    """
-    from pippa_agentapp_sdk import InputShapeViolation
-
-    with pytest.raises(InputShapeViolation):
-        call({"date": "2026-12-25", "timezone": "Mars/Olympus"})
+def test_an_empty_sky_is_an_answer_not_an_error():
+    result = call({"place": "Hammersmith"}, stub(aircraft={"ac": []}))
+    assert result.data == {"place": "Hammersmith", "plane_found": False,
+                           "planes_nearby": 0}
+    assert "No aircraft" in result.narrative
 
 
-def test_no_date_is_an_error_a_user_can_read():
-    with pytest.raises(CannotReadDate) as failure:
-        call({"date": ""})
-    # `user_message` is the only part a user may be shown, so it is the part
-    # worth asserting on. The rest stays in the logs.
-    assert failure.value.user_message == "I could not work out which date you meant."
+def test_a_missing_aircraft_list_is_an_empty_sky():
+    result = call({"place": "Hammersmith"}, stub(aircraft={"msg": "No error"}))
+    assert result.data["plane_found"] is False
 
 
-def test_nonsense_is_refused_rather_than_guessed():
-    with pytest.raises(CannotReadDate):
-        call({"date": "a week on Thursday-ish"})
+def test_no_place_says_what_to_type():
+    with pytest.raises(NoPlaceGiven) as failure:
+        call({"place": ""})
+    assert "Hammersmith" in failure.value.user_message
 
 
-def test_picked_by_name_it_answers_and_refuses_as_usual():
-    """`@Days Until ...` in the chat: the person picked this app themselves.
+def test_no_place_at_all_says_what_to_type():
+    with pytest.raises(NoPlaceGiven):
+        call({})
 
-    Then nothing checks whether the message suits the app. It is called
-    whatever the words, and `call.context.explicit` is True. The right
-    response is the ordinary one: answer what you can, and refuse only for a
-    missing or unreadable input, with a sentence that says what was wrong.
-    Never refuse because the message does not look like your example phrases
-    — the person has already told you it is for you.
 
-    This app never reads the flag, because it never needed to: it already
-    refuses only for a missing or unreadable date. If yours does, read it as
-    `getattr(call.context, "explicit", False)`. An app published before the
-    platform update that added the flag runs on an SDK that does not have
-    it, until you publish it again.
-    """
-    picked = call({"date": "2026-12-25"}, explicit=True)
-    assert picked.data == call({"date": "2026-12-25"}).data
+def test_a_place_that_does_not_exist_is_named():
+    """Nominatim answers 200 with [] for a place that is not there."""
+    with pytest.raises(PlaceNotFound) as failure:
+        call({"place": "Narnia"}, stub(geocode=[]))
+    assert failure.value.user_message == "I could not find anywhere called Narnia on the map."
 
-    with pytest.raises(CannotReadDate) as failure:
-        call({"date": ""}, explicit=True)
-    assert failure.value.user_message == "I could not work out which date you meant."
+
+def test_rate_limited_flight_tracker_says_try_again():
+    with pytest.raises(RateLimitedError):
+        call({"place": "Hammersmith"}, stub(fail={"adsb.lol": http_error(429)}))
+
+
+def test_flight_tracker_down_is_retryable():
+    with pytest.raises(ServiceUnavailableError):
+        call({"place": "Hammersmith"}, stub(fail={"adsb.lol": http_error(503)}))
+
+
+def test_a_timeout_is_caught():
+    with pytest.raises(ServiceUnavailableError):
+        call({"place": "Hammersmith"}, stub(fail={"adsb.lol": TimeoutError()}))
+
+
+def test_unreachable_map_service_is_caught():
+    with pytest.raises(ServiceUnavailableError):
+        call({"place": "Hammersmith"},
+             stub(fail={"nominatim": urllib.error.URLError("dns")}))
+
+
+def test_picked_by_name_it_answers_the_same():
+    assert call({"place": "Hammersmith"}, explicit=True).data == \
+        call({"place": "Hammersmith"}).data
 
 
 def test_the_runner_enforces_the_manifest(monkeypatch):
-    """Proof that the contract is real, and the reason to test through it.
-
-    An app returning a field it did not declare is refused. You will meet this
-    error if you add something to `data` and forget to add it to `output` in
-    manifest.yaml — which is the single most common way a first app fails
-    after it deploys.
-    """
     from pippa_agentapp_sdk import Result
 
-    monkeypatch.setattr(
-        App, "handle", lambda self, c: Result(data={"surprise": "hello"})
-    )
+    monkeypatch.setattr(App, "handle", lambda self, c: Result(data={"surprise": 1}))
     with pytest.raises(OutputShapeViolation):
-        call({"date": "2026-12-25"})
+        call({"place": "Hammersmith"})
