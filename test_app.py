@@ -119,6 +119,55 @@ def test_the_city_is_added_when_the_airport_name_lacks_it():
     assert data["destination"] == "Houari Boumediene Airport (Algiers)"
 
 
+def test_an_airliner_is_preferred_over_a_nearer_helicopter():
+    """The helicopter is closer, but the airliner is what people point at."""
+    sky = {"ac": [
+        {"flight": "GOHLI   ", "t": "R44", "alt_baro": 1100, "dst": 1.0, "dir": 270},
+        {"flight": "BAW35   ", "t": "B77W", "alt_baro": 3800, "dst": 4.0, "dir": 90},
+    ]}
+    data = call({"place": "Hammersmith"}, stub(aircraft=sky)).data
+    assert data["callsign"] == "BAW35"
+    assert data["planes_nearby"] == 2
+
+
+def test_a_stale_route_is_dropped_for_a_low_plane():
+    """3,800 ft over London cannot be Doha to Brisbane: say nothing instead."""
+    stale = {"response": {"flightroute": {
+        "callsign_iata": "QR4", "airline": {"name": "Qatar Airways"},
+        "origin": {"name": "Hamad International Airport", "municipality": "Doha",
+                   "latitude": 25.27, "longitude": 51.61},
+        "destination": {"name": "Brisbane International Airport",
+                        "municipality": "Brisbane",
+                        "latitude": -27.38, "longitude": 153.12},
+    }}}
+    data = call({"place": "Hammersmith"}, stub(route=stale)).data
+    assert data["airline"] == "Qatar Airways"
+    assert "origin" not in data and "destination" not in data
+
+
+def test_a_route_through_a_nearby_airport_is_kept():
+    real = {"response": {"flightroute": {
+        "callsign_iata": "BA35", "airline": {"name": "British Airways"},
+        "origin": {"name": "London Heathrow Airport", "municipality": "London",
+                   "latitude": 51.47, "longitude": -0.46},
+        "destination": {"name": "Chennai International Airport",
+                        "municipality": "Chennai",
+                        "latitude": 12.99, "longitude": 80.17},
+    }}}
+    data = call({"place": "Hammersmith"}, stub(route=real)).data
+    assert data["destination"] == "Chennai International Airport"
+
+
+def test_with_no_airliner_the_nearest_aircraft_is_named():
+    sky = {"ac": [
+        {"flight": "GOHLI   ", "t": "R44", "alt_baro": 1100, "dst": 1.0, "dir": 270},
+    ]}
+    data = call({"place": "Hammersmith"},
+                stub(aircraft=sky, route={"response": "unknown callsign"})).data
+    assert data["callsign"] == "GOHLI"
+    assert data["aircraft_type"] == "Robinson R44 helicopter"
+
+
 def test_a_flight_with_no_published_route_still_answers():
     """Police helicopters and private planes have no route. Leave it out."""
     data = call({"place": "Hammersmith"},

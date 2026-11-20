@@ -16,6 +16,8 @@ The app keeps nothing between calls and is told nothing about who asked.
 from __future__ import annotations
 
 import json
+import math
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -94,6 +96,15 @@ AIRCRAFT_TYPES = {
     "B505": "Bell 505 helicopter", "R44": "Robinson R44 helicopter",
 }
 
+#: Below this a plane is climbing out of or coming into an airport near the
+#: place, so one end of its route must be within NEAR_AIRPORT_MILES of it.
+LOW_ALTITUDE_FEET = 10_000
+NEAR_AIRPORT_MILES = 60
+
+#: An airline flight's callsign: the airline's three-letter ICAO code, then
+#: a digit. A private plane's callsign is usually its registration (GOHLI).
+AIRLINE_CALLSIGN = re.compile(r"^[A-Z]{3}[0-9][0-9A-Z]{0,4}$")
+
 COMPASS = ["north", "north-east", "east", "south-east",
            "south", "south-west", "west", "north-west"]
 
@@ -167,8 +178,17 @@ class App:
             "plane_found": True,
             "planes_nearby": len(aircraft),
         }
-        data.update(self._describe(aircraft[0]))
-        data.update(self._route(data.get("callsign")))
+        data.update(self._describe(self._pick(aircraft)))
+        route = self._route(data.get("callsign"))
+        ends = route.pop("_ends", [])
+        if data["altitude_feet"] < LOW_ALTITUDE_FEET and ends and not any(
+            miles_between(lat, lon, a, b) <= NEAR_AIRPORT_MILES for a, b in ends
+        ):
+            # Low over here but neither airport is nearby: the route on file
+            # for this callsign is stale. Saying nothing beats a wrong city.
+            route = {k: v for k, v in route.items()
+                     if k not in ("origin", "destination")}
+        data.update(route)
         return Result(data=data, narrative=self._sentence(data))
 
     def _locate(self, place: str) -> tuple[float, float, str]:
@@ -225,6 +245,20 @@ class App:
         return airborne
 
     @staticmethod
+    def _pick(aircraft: list[dict]) -> dict:
+        """The nearest airline flight, else the nearest aircraft of any kind.
+
+        The nearest thing in the sky over London is often a helicopter or a
+        private plane flying under its registration (GOHLI), which has no
+        route. The airliner a person is pointing at has an airline callsign
+        (three letters then a digit: BAW35, EZY81QJ), and a route to report.
+        """
+        for plane in aircraft:  # already nearest first
+            if AIRLINE_CALLSIGN.match(str(plane.get("flight") or "").strip()):
+                return plane
+        return aircraft[0]
+
+    @staticmethod
     def _describe(plane: dict) -> dict:
         out: dict = {}
         callsign = str(plane.get("flight") or "").strip()
@@ -271,12 +305,20 @@ class App:
         airline = route.get("airline")
         if isinstance(airline, dict) and airline.get("name"):
             out["airline"] = str(airline["name"])
+        ends = []
         for key in ("origin", "destination"):
             airport = route.get(key)
+            if isinstance(airport, dict):
+                try:
+                    ends.append((float(airport["latitude"]), float(airport["longitude"])))
+                except (KeyError, TypeError, ValueError):
+                    pass
             if isinstance(airport, dict) and airport.get("name"):
                 city = airport.get("municipality")
                 name = str(airport["name"])
                 out[key] = f"{name} ({city})" if city and city not in name else name
+        if ends:
+            out["_ends"] = ends  # internal: removed before returning
         return out
 
     @staticmethod
@@ -304,6 +346,14 @@ class App:
         if d["planes_nearby"] > 1:
             sentence += f" {d['planes_nearby']} aircraft are in the air nearby."
         return sentence
+
+
+def miles_between(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in miles."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 3958.8 * 2 * math.asin(math.sqrt(h))
 
 
 def _article(word: str) -> str:
