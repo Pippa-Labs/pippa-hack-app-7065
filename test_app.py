@@ -92,8 +92,9 @@ def test_it_names_the_nearest_airborne_plane_with_its_route():
     assert data["flight_number"] == "BA35"
     assert data["airline"] == "British Airways"
     assert data["aircraft_type"] == "Boeing 777-300ER"
-    assert data["origin"] == "London Heathrow Airport (London)"
-    assert data["destination"] == "Chennai International Airport (Chennai)"
+    # The city is left off when the airport's name already says it.
+    assert data["origin"] == "London Heathrow Airport"
+    assert data["destination"] == "Chennai International Airport"
     assert data["altitude_feet"] == 3800
     assert data["speed_mph"] == 184
     assert data["distance_miles"] == 2.8
@@ -105,7 +106,17 @@ def test_the_sentence_reads_well():
     narrative = call({"place": "Hammersmith"}).narrative
     assert narrative.startswith("British Airways flight BA35, a Boeing 777-300ER,")
     assert "south-west of Hammersmith at 3,800 feet" in narrative
-    assert "to Chennai International Airport (Chennai)" in narrative
+    assert "to Chennai International Airport." in narrative
+
+
+def test_the_city_is_added_when_the_airport_name_lacks_it():
+    route = {"response": {"flightroute": {
+        "callsign_iata": "AH2055", "airline": {"name": "Air Algerie"},
+        "origin": {"name": "London Heathrow Airport", "municipality": "London"},
+        "destination": {"name": "Houari Boumediene Airport", "municipality": "Algiers"},
+    }}}
+    data = call({"place": "Hammersmith"}, stub(route=route)).data
+    assert data["destination"] == "Houari Boumediene Airport (Algiers)"
 
 
 def test_a_flight_with_no_published_route_still_answers():
