@@ -56,6 +56,7 @@ LONDON_VIEWBOX = "-0.51,51.69,0.33,51.28"
 WELL_KNOWN = 0.3
 
 NM_TO_MILES = 1.15078
+NM_TO_FEET = 6076.12
 KNOTS_TO_MPH = 1.15078
 
 #: Friendly names for the ICAO type codes seen most over the UK. Anything not
@@ -94,6 +95,22 @@ AIRCRAFT_TYPES = {
     "A169": "Leonardo AW169 helicopter", "AS50": "Airbus H125 helicopter",
     "EC35": "Airbus H135 helicopter", "EC45": "Airbus H145 helicopter",
     "B505": "Bell 505 helicopter", "R44": "Robinson R44 helicopter",
+}
+
+#: Typical seats in a two-class layout, so "about N people on board" is an
+#: honest estimate. Freighters, business jets and helicopters are left out:
+#: a number for those would be a guess dressed up as a fact.
+TYPICAL_SEATS = {
+    "A318": 110, "A319": 140, "A19N": 140, "A320": 180, "A20N": 186,
+    "A321": 200, "A21N": 220, "A332": 250, "A333": 290, "A338": 250,
+    "A339": 290, "A343": 270, "A346": 320, "A359": 320, "A35K": 350,
+    "A388": 500, "BCS1": 110, "BCS3": 140,
+    "B737": 140, "B738": 180, "B739": 190, "B38M": 180, "B39M": 190,
+    "B744": 400, "B748": 410, "B752": 200, "B763": 250, "B764": 240,
+    "B772": 300, "B77L": 300, "B77W": 350,
+    "B788": 240, "B789": 280, "B78X": 320,
+    "E170": 76, "E175": 80, "E190": 100, "E195": 120, "E290": 100, "E295": 130,
+    "AT72": 70, "AT76": 70, "DH8D": 78, "CRJ9": 90, "RJ85": 85,
 }
 
 #: Below this a plane is climbing out of or coming into an airport near the
@@ -278,6 +295,17 @@ class App:
         bearing = plane.get("dir")
         if isinstance(bearing, (int, float)):
             out["direction"] = COMPASS[int((bearing % 360 + 22.5) // 45) % 8]
+        # How high to look: the angle up from the horizon, from the height
+        # and the ground distance. Flat-earth is fine within 12 miles.
+        ground_feet = float(plane["dst"]) * NM_TO_FEET
+        angle = 90 if ground_feet <= 0 else round(
+            math.degrees(math.atan2(out["altitude_feet"], ground_feet))
+        )
+        out["look_up_degrees"] = int(angle)
+        out["where_to_look"] = _where_to_look(out.get("direction"), angle)
+        seats = TYPICAL_SEATS.get(code)
+        if seats:
+            out["people_on_board"] = seats
         rate = plane.get("baro_rate", plane.get("geom_rate"))
         if isinstance(rate, (int, float)):
             out["climbing_or_descending"] = (
@@ -339,7 +367,9 @@ class App:
             where += f" {d['direction']} of {d['place']}"
         else:
             where += f" from {d['place']}"
-        sentence = f"{lead} is {where} at {d['altitude_feet']:,} feet"
+        sentence = f"Look {d['where_to_look']}: {lead} is {where} at {d['altitude_feet']:,} feet"
+        if d.get("people_on_board"):
+            sentence += f", with about {d['people_on_board']} people on board"
         if d.get("origin") and d.get("destination"):
             sentence += f", flying from {d['origin']} to {d['destination']}"
         sentence += "."
@@ -354,6 +384,20 @@ def miles_between(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dp, dl = p2 - p1, math.radians(lon2 - lon1)
     h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 3958.8 * 2 * math.asin(math.sqrt(h))
+
+
+def _where_to_look(direction: str | None, angle: int) -> str:
+    """'south-west, about 25° up (low in the sky)' — words a person can point with."""
+    if angle >= 75:
+        return "almost straight up"
+    if angle >= 45:
+        height = "high in the sky"
+    elif angle >= 20:
+        height = "about halfway up the sky" if angle >= 35 else "low in the sky"
+    else:
+        height = "just above the horizon"
+    towards = f"{direction}, " if direction else ""
+    return f"{towards}about {angle}° up ({height})"
 
 
 def _article(word: str) -> str:

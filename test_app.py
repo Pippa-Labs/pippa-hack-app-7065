@@ -104,8 +104,12 @@ def test_it_names_the_nearest_airborne_plane_with_its_route():
 
 def test_the_sentence_reads_well():
     narrative = call({"place": "Hammersmith"}).narrative
-    assert narrative.startswith("British Airways flight BA35, a Boeing 777-300ER,")
+    assert narrative.startswith(
+        "Look south-west, about 15° up (just above the horizon): "
+        "British Airways flight BA35, a Boeing 777-300ER,"
+    )
     assert "south-west of Hammersmith at 3,800 feet" in narrative
+    assert "with about 350 people on board" in narrative
     assert "to Chennai International Airport." in narrative
 
 
@@ -117,6 +121,31 @@ def test_the_city_is_added_when_the_airport_name_lacks_it():
     }}}
     data = call({"place": "Hammersmith"}, stub(route=route)).data
     assert data["destination"] == "Houari Boumediene Airport (Algiers)"
+
+
+def test_it_says_where_to_look_and_how_many_people():
+    data = call({"place": "Hammersmith"}).data
+    # 3,800 ft up, 2.4 nautical miles away along the ground: atan(3800/14583).
+    assert data["look_up_degrees"] == 15
+    assert data["where_to_look"] == "south-west, about 15° up (just above the horizon)"
+    assert data["people_on_board"] == 350
+
+
+def test_a_plane_right_overhead_is_straight_up():
+    sky = {"ac": [{"flight": "BAW35   ", "t": "A320", "alt_baro": 4000,
+                   "dst": 0.1, "dir": 10}]}
+    data = call({"place": "Hammersmith"}, stub(aircraft=sky)).data
+    assert data["where_to_look"] == "almost straight up"
+    assert data["look_up_degrees"] >= 75
+
+
+def test_no_seat_estimate_for_a_helicopter():
+    sky = {"ac": [{"flight": "GOHLI   ", "t": "R44", "alt_baro": 1100,
+                   "dst": 1.0, "dir": 270}]}
+    data = call({"place": "Hammersmith"},
+                stub(aircraft=sky, route={"response": "unknown callsign"})).data
+    assert "people_on_board" not in data
+    assert data["where_to_look"].startswith("west, about ")
 
 
 def test_an_airliner_is_preferred_over_a_nearer_helicopter():

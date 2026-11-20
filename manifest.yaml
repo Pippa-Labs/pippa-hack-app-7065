@@ -69,7 +69,7 @@ app:
   # your "latest" version is simply the one you pushed most recently.
   # docs/REVIEW_AND_SHARING.md says which version you, your testers and
   # everybody else get.
-  version: 0.1.1
+  version: 0.1.2
   # One or two sentences, written for someone deciding whether to install it.
   # Say what it does and what it sends anywhere. Never use the word "by" — the
   # badge Pippa shows is parsed from "[via <name> <version> by <author name>]"
@@ -102,7 +102,7 @@ agent_types:
 
 outcomes:
   - id: plane.overhead
-    summary: Name the plane flying over a place right now, with its route, airline, aircraft type and height
+    summary: Name the plane flying over a place right now, where to look for it, its route, airline, aircraft type and height
     example_phrases:
       - what plane is flying over
       - what's that plane above
@@ -112,6 +112,7 @@ outcomes:
       - what's that helicopter flying over
       - plane flying over me right now
       - how high is the plane above
+      - where do i look to see the plane
     inputs:
       # Optional on purpose: a missing REQUIRED input is refused before the
       # code runs, with a message that blames the app. The code says what to
@@ -174,6 +175,20 @@ outcomes:
         type: string
         required: false
         description: Which way to look from the place, such as north-west.
+      - name: where_to_look
+        type: string
+        description: >-
+          Which way and how high to look from the place, such as "south-west,
+          about 25° up (low in the sky)".
+      - name: look_up_degrees
+        type: integer
+        description: The angle above the horizon to look, from 0 to 90.
+      - name: people_on_board
+        type: integer
+        required: false
+        description: >-
+          About how many people a plane of this type typically carries. An
+          estimate from the aircraft type, not a passenger count.
       - name: climbing_or_descending
         type: string
         required: false
