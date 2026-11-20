@@ -176,11 +176,13 @@ outcomes:
         required: false
         description: Which way to look from the place, such as north-west.
       - name: where_to_look
+        required: false
         type: string
         description: >-
           Which way and how high to look from the place, such as "south-west,
           about 25° up (low in the sky)".
       - name: look_up_degrees
+        required: false
         type: integer
         description: The angle above the horizon to look, from 0 to 90.
       - name: people_on_board
